@@ -1,6 +1,7 @@
 from typing import Union
 
 import torch
+import triton
 
 
 def _rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -13,7 +14,7 @@ def _rotate_half(x: torch.Tensor) -> torch.Tensor:
 
 
 @torch.jit.script
-def apply_rotary_pos_emb(
+def rotary_pos_emb_torch(
     t: torch.Tensor,
     freqs: torch.Tensor,
     tensor_format: str = "sbhd",
@@ -46,9 +47,7 @@ def apply_rotary_pos_emb(
     #    ), "cu_seqlens must not be None when tensor_format is 'thd'."
     #    return FusedRoPEFunc.apply(t, freqs, tensor_format, cu_seqlens)
 
-    assert tensor_format in ("sbhd", "bshd"), (
-        "Only formats `sbhd` or `bshd` are supported for input tensor `t` " f"when fused is False, got {tensor_format}."
-    )
+    assert tensor_format in ("sbhd", "bshd"), "Only formats `sbhd` or `bshd` are supported for input tensor `t` " f"when fused is False, got {tensor_format}."
 
     max_seq_len = freqs.shape[0]
     cur_seq_len = t.shape[1] if tensor_format == "bshd" else t.shape[0]
@@ -94,17 +93,48 @@ def rotary_pos_emb(
     return torch.cat((t, t_pass), dim=-1)
 
 
-if __name__ == "__main__":
-    torch.manual_seed(0)
-    s, b, h, d = 32, 16, 12, 8
-    s2, d2 = 48, 6
+@triton.testing.perf_report(
+    triton.testing.Benchmark(
+        x_names=["S"],  # Argument names to use as an x-axis for the plot
+        x_vals=[64 * i for i in range(1, 33)],  # Different possible values for `x_name`
+        line_arg="provider",  # Argument name whose value corresponds to a different line in the plot
+        # Possible values for `line_arg`
+        line_vals=["torch-jit", "triton"],
+        # Label name for the lines
+        line_names=["torch-jit", "triton"],
+        # Line styles
+        styles=[("green", "-"), ("blue", "-")],
+        ylabel="GB/s",  # Label name for the y-axis
+        plot_name="rope-performance",  # Name for the plot, used also as a file name for saving the plot.
+        args={},
+    )
+)
+def benchmark(S, provider):
+    s, b, h, d = S, 16, 12, 256
+    s2, d2 = 2048, 192
     t = torch.randn([s, b, h, d], device="cuda")
     freqs = torch.randn([s2, 1, 1, d2], device="cuda")
+    quantiles = [0.5, 0.2, 0.8]
+    if provider == "torch-jit":
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: rotary_pos_emb_torch(t, freqs), quantiles=quantiles)
+    if provider == "triton":
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: rotary_pos_emb(t, freqs), quantiles=quantiles)
+    gbps = lambda ms: 2 * t.nelement() * t.element_size() * 1e-9 / (ms * 1e-3)
+    return gbps(ms), gbps(max_ms), gbps(min_ms)
 
-    triton_output = rotary_pos_emb(t, freqs)
-    torch_output = apply_rotary_pos_emb(t, freqs)
-    print(triton_output.shape, torch_output.shape)
-    if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
-        print("✅ Triton and Torch match")
-    else:
-        print("❌ Triton and Torch differ")
+
+torch.manual_seed(0)
+s, b, h, d = 32, 16, 12, 256
+s2, d2 = 48, 192
+t = torch.randn([s, b, h, d], device="cuda")
+freqs = torch.randn([s2, 1, 1, d2], device="cuda")
+
+triton_output = rotary_pos_emb(t, freqs)
+torch_output = rotary_pos_emb_torch(t, freqs)
+print(triton_output.shape, torch_output.shape)
+if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
+    print("✅ Triton and Torch match")
+else:
+    print("❌ Triton and Torch differ")
+
+benchmark.run(show_plots=True, print_data=True, save_path=".")
