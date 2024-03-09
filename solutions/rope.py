@@ -1,3 +1,4 @@
+import os
 from typing import Union
 
 import torch
@@ -104,33 +105,32 @@ def rope_kernel(
     o_s_stride,
     bh,
     d,
-    BLOCK_SIZE: tl.constexpr,
+    BLOCK_M: tl.constexpr,
 ):
     row_idx = tl.program_id(0)
+    bh_idx = tl.program_id(1)
     t_start_ptr = t_ptr + row_idx * t_s_stride
     f_start_ptr = f_ptr + row_idx * f_s_stride
     o_start_ptr = o_ptr + row_idx * o_s_stride
 
-    col_offsets = tl.arange(0, BLOCK_SIZE)
+    col_offsets = tl.arange(0, BLOCK_M)
     f_ptrs = f_start_ptr + col_offsets
 
     f = tl.load(f_ptrs)
 
-    cos_ = tl.cos(f)
-    sin_ = tl.sin(f)
-
+    cos_ = tl.math.cos(f)
+    sin_ = tl.math.sin(f)
     d_half = d // 2
-    for i in range(bh):
-        t_ptrs = t_start_ptr + i * BLOCK_SIZE + col_offsets
-        o_ptrs = o_start_ptr + i * BLOCK_SIZE + col_offsets
-        t = tl.load(t_ptrs)
+    t_ptrs = t_start_ptr + bh_idx * BLOCK_M + col_offsets
+    o_ptrs = o_start_ptr + bh_idx * BLOCK_M + col_offsets
+    t = tl.load(t_ptrs)
 
-        t0 = tl.load(t_ptrs - d_half, mask=col_offsets >= d_half, other=0.0)
-        t1 = tl.load(t_ptrs + d_half, mask=col_offsets < d_half, other=0.0)
-        t_rotated = t0 - t1
+    t0 = tl.load(t_ptrs - d_half, mask=col_offsets >= d_half, other=0.0)
+    t1 = tl.load(t_ptrs + d_half, mask=col_offsets < d_half, other=0.0)
+    t_rotated = t0 - t1
 
-        y = t * cos_ + t_rotated * sin_
-        tl.store(o_ptrs, y)
+    y = t * cos_ + t_rotated * sin_
+    tl.store(o_ptrs, y)
 
 
 def rope(
@@ -145,17 +145,17 @@ def rope(
     t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
 
     s, b, h, d = t.shape
-    BLOCK_SIZE = triton.next_power_of_2(d)
+    BLOCK_M = triton.next_power_of_2(d)
     num_warps = 4
-    if BLOCK_SIZE >= 2048:
+    if BLOCK_M >= 2048:
         num_warps = 8
-    if BLOCK_SIZE >= 4096:
+    if BLOCK_M >= 4096:
         num_warps = 16
 
     o = torch.empty_like(t)
     bh = b * h
 
-    rope_kernel[(s,)](
+    rope_kernel[(s, bh)](
         t,
         freqs,
         o,
@@ -165,7 +165,7 @@ def rope(
         bh,
         d,
         num_warps=num_warps,
-        BLOCK_SIZE=BLOCK_SIZE,
+        BLOCK_M=BLOCK_M,
     )
 
     return torch.cat((o, t_pass), dim=-1)
@@ -188,7 +188,7 @@ def rope(
     )
 )
 def benchmark(S, provider):
-    s, b, h, d = S, 16, 12, 256
+    s, b, h, d = S, 16, 8, 256
     s2, d2 = 2048, 256
     t = torch.randn([s, b, h, d], device="cuda")
     freqs = torch.randn([s2, 1, 1, d2], device="cuda")
@@ -208,17 +208,14 @@ s, b, h, d = 32, 16, 12, 256
 s2, d2 = 48, 256
 t = torch.randn([s, b, h, d], device="cuda")
 freqs = torch.randn([s2, 1, 1, d2], device="cuda")
-print(t.stride(0))
 
 triton_output = rope(t, freqs)
 torch_output = rope_torch(t, freqs)
-print(triton_output.shape, torch_output.shape)
 if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
     print("✅ Triton and Torch match")
 else:
     print("❌ Triton and Torch differ")
-    print(triton_output[1, 0, 1, :277])
-    print(torch_output[1, 0, 1, :277])
-    print(torch.sum(torch.abs(triton_output - torch_output) > 1e-2))
 
-benchmark.run(show_plots=True, print_data=True, save_path=".")
+
+os.makedirs("./results", exist_ok=True)
+benchmark.run(show_plots=True, print_data=True, save_path="./results")
