@@ -103,34 +103,49 @@ def rope_kernel(
     t_s_stride,
     f_s_stride,
     o_s_stride,
-    bh,
     d,
+    d2,
     BLOCK_M: tl.constexpr,
 ):
-    row_idx = tl.program_id(0)
+    s_idx = tl.program_id(0)
     bh_idx = tl.program_id(1)
-    t_start_ptr = t_ptr + row_idx * t_s_stride
-    f_start_ptr = f_ptr + row_idx * f_s_stride
-    o_start_ptr = o_ptr + row_idx * o_s_stride
+    t_start_ptr = t_ptr + s_idx * t_s_stride
+    f_start_ptr = f_ptr + s_idx * f_s_stride
+    o_start_ptr = o_ptr + s_idx * o_s_stride
 
+    d2_half = d2 // 2
     col_offsets = tl.arange(0, BLOCK_M)
-    f_ptrs = f_start_ptr + col_offsets
+    mask = col_offsets < d2_half
+    f0_ptrs = f_start_ptr + col_offsets
+    f1_ptrs = f_start_ptr + col_offsets + d2_half
+    f0 = tl.load(f0_ptrs, mask=mask, other=0.0)
+    cos0 = tl.cos(f0)
+    sin0 = tl.sin(f0)
+    f1 = tl.load(f1_ptrs, mask=mask, other=0.0)
+    cos1 = tl.cos(f1)
+    sin1 = tl.sin(f1)
 
-    f = tl.load(f_ptrs)
+    t0_ptrs = t_start_ptr + bh_idx * d + col_offsets
+    t1_ptrs = t_start_ptr + bh_idx * d + col_offsets + d2_half
 
-    cos_ = tl.math.cos(f)
-    sin_ = tl.math.sin(f)
-    d_half = d // 2
-    t_ptrs = t_start_ptr + bh_idx * BLOCK_M + col_offsets
-    o_ptrs = o_start_ptr + bh_idx * BLOCK_M + col_offsets
-    t = tl.load(t_ptrs)
+    t0 = tl.load(t0_ptrs, mask=mask, other=0.0)
+    t1 = tl.load(t1_ptrs, mask=mask, other=0.0)
 
-    t0 = tl.load(t_ptrs - d_half, mask=col_offsets >= d_half, other=0.0)
-    t1 = tl.load(t_ptrs + d_half, mask=col_offsets < d_half, other=0.0)
-    t_rotated = t0 - t1
+    o0 = t0 * cos0 - t1 * sin0
+    o1 = t0 * sin1 + t1 * cos1
 
-    y = t * cos_ + t_rotated * sin_
-    tl.store(o_ptrs, y)
+    o0_ptrs = o_start_ptr + bh_idx * d + col_offsets
+    o1_ptrs = o_start_ptr + bh_idx * d + col_offsets + d2_half
+    tl.store(o0_ptrs, o0, mask=mask)
+    tl.store(o1_ptrs, o1, mask=mask)
+
+    if d2 < d:
+        remainder = d - d2
+        t2_ptrs = t_start_ptr + bh_idx * d + col_offsets + d2
+        o2_ptrs = o_start_ptr + bh_idx * d + col_offsets + d2
+        mask = col_offsets < remainder
+        t2 = tl.load(t2_ptrs, mask=mask, other=0.0)
+        tl.store(o2_ptrs, t2, mask=mask)
 
 
 def rope(
@@ -141,11 +156,10 @@ def rope(
     cur_seq_len = t.shape[0]
     assert cur_seq_len <= max_seq_len
     freqs = freqs[:cur_seq_len]
-    rot_dim = freqs.shape[-1]
-    t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
+    d2 = freqs.shape[-1]
 
     s, b, h, d = t.shape
-    BLOCK_M = triton.next_power_of_2(d)
+    BLOCK_M = triton.next_power_of_2(d2 // 2)
     num_warps = 4
     if BLOCK_M >= 2048:
         num_warps = 8
@@ -162,13 +176,13 @@ def rope(
         t.stride(0),
         freqs.stride(0),
         o.stride(0),
-        bh,
         d,
+        d2,
         num_warps=num_warps,
         BLOCK_M=BLOCK_M,
     )
 
-    return torch.cat((o, t_pass), dim=-1)
+    return o
 
 
 @triton.testing.perf_report(
@@ -189,7 +203,7 @@ def rope(
 )
 def benchmark(S, provider):
     s, b, h, d = S, 16, 8, 256
-    s2, d2 = 2048, 256
+    s2, d2 = 4096, 256
     t = torch.randn([s, b, h, d], device="cuda")
     freqs = torch.randn([s2, 1, 1, d2], device="cuda")
     quantiles = [0.5, 0.2, 0.8]
@@ -204,14 +218,14 @@ def benchmark(S, provider):
 
 
 torch.manual_seed(0)
-s, b, h, d = 32, 16, 12, 256
-s2, d2 = 48, 256
+s, b, h, d = 32, 16, 12, 1024
+s2, d2 = 48, 768
 t = torch.randn([s, b, h, d], device="cuda")
 freqs = torch.randn([s2, 1, 1, d2], device="cuda")
 
 triton_output = rope(t, freqs)
 torch_output = rope_torch(t, freqs)
-if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
+if torch.allclose(triton_output, torch_output, atol=1e-3, rtol=0):
     print("✅ Triton and Torch match")
 else:
     print("❌ Triton and Torch differ")
