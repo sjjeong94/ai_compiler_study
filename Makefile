@@ -9,6 +9,7 @@ run:
 
 docker_image:
 	@echo "Building a Docker Image"
+	docker pull nvcr.io/nvidia/pytorch:23.10-py3
 	docker build --no-cache --tag $(DOCKER_IMAGE_NAME):$(DOCKER_IMAGE_VERSION) .
 
 clean:
