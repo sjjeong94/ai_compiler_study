@@ -49,11 +49,19 @@ def rope_fwd_kernel(
 
     if d2 < d:
         remainder = d - d2
-        t2_ptrs = t_start_ptr + bh_idx * d + col_offsets + d2
-        o2_ptrs = o_start_ptr + bh_idx * d + col_offsets + d2
-        mask = col_offsets < remainder
-        t2 = tl.load(t2_ptrs, mask=mask, other=0.0)
-        tl.store(o2_ptrs, t2, mask=mask)
+        q, r = remainder // BLOCK_M, remainder % BLOCK_M
+        for i in range(q):
+            t2_ptrs = t_start_ptr + bh_idx * d + col_offsets + d2 + BLOCK_M * i
+            o2_ptrs = o_start_ptr + bh_idx * d + col_offsets + d2 + BLOCK_M * i
+            t2 = tl.load(t2_ptrs)
+            tl.store(o2_ptrs, t2)
+
+        if r > 0:
+            t2_ptrs = t_start_ptr + bh_idx * d + col_offsets + d2 + BLOCK_M * q
+            o2_ptrs = o_start_ptr + bh_idx * d + col_offsets + d2 + BLOCK_M * q
+            mask = col_offsets < r
+            t2 = tl.load(t2_ptrs, mask=mask, other=0.0)
+            tl.store(o2_ptrs, t2, mask=mask)
 
 
 def rope_fwd(

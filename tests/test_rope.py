@@ -34,7 +34,11 @@ def rope_ref(
 
 @pytest.mark.parametrize(
     "t_shape, f_shape",
-    ([[32, 16, 12, 1024], [48, 1, 1, 768]],),
+    (
+        [[32, 16, 12, 1024], [48, 1, 1, 768]],
+        [[8, 1, 32, 4096], [16, 1, 1, 2048]],
+        [[8, 1, 32, 6144], [16, 1, 1, 2048]],
+    ),
 )
 def test_rope_fwd(t_shape, f_shape):
     t = torch.randn(t_shape, device="cuda")

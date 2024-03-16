@@ -4,4 +4,5 @@ WORKDIR /projects/ai_compiler_study
 
 RUN apt-get update
 RUN python -m pip install --upgrade pip
+RUN pip install triton==2.2.0
 RUN pip install git+https://github.com/NVIDIA/TransformerEngine.git@stable
