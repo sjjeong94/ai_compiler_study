@@ -12,9 +12,21 @@ make docker_image
 make run
 ```
 
+## Test
+You can test the package with following commands.
+```bash
+# install the package
+pip install -e .[testing]
+
+# run tests
+pytest
+```
+
 ## References
 - [Triton Github](https://github.com/openai/triton)
 - [Triton Webpage](https://triton-lang.org)
+
+
 
 ## License
 MIT

@@ -35,7 +35,7 @@ def rope_torch_jit(
 
 
 @triton.jit
-def rope_kernel(
+def rope_fwd_kernel(
     t_ptr,
     f_ptr,
     o_ptr,
@@ -87,7 +87,7 @@ def rope_kernel(
         tl.store(o2_ptrs, t2, mask=mask)
 
 
-def rope(
+def rope_fwd(
     t: torch.Tensor,
     freqs: torch.Tensor,
 ) -> torch.Tensor:
@@ -108,7 +108,7 @@ def rope(
     o = torch.empty_like(t)
     bh = b * h
 
-    rope_kernel[(s, bh)](
+    rope_fwd_kernel[(s, bh)](
         t,
         freqs,
         o,
@@ -151,7 +151,7 @@ def benchmark(seq_len, provider):
     if provider == "torch-jit":
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: rope_torch_jit(t, freqs), quantiles=quantiles)
     if provider == "triton":
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: rope(t, freqs), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: rope_fwd(t, freqs), quantiles=quantiles)
     gbps = lambda ms: 2 * t.nelement() * t.element_size() * 1e-9 / (ms * 1e-3)
     return gbps(ms), gbps(max_ms), gbps(min_ms)
 
@@ -162,7 +162,7 @@ s2, d2 = 48, 768
 t = torch.randn([s, b, h, d], device="cuda")
 freqs = torch.randn([s2, 1, 1, d2], device="cuda")
 
-triton_output = rope(t, freqs)
+triton_output = rope_fwd(t, freqs)
 torch_output = apply_rotary_pos_emb(t, freqs)
 if torch.allclose(triton_output, torch_output, atol=1e-3, rtol=0):
     print("✅ Triton and Torch match")
