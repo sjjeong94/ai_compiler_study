@@ -41,9 +41,9 @@ def rope_torch_jit(
         x_vals=[64 * i for i in range(1, 33)],  # Different possible values for `x_name`
         line_arg="provider",  # Argument name whose value corresponds to a different line in the plot
         # Possible values for `line_arg`
-        line_vals=["fused", "torch-jit", "triton"],
+        line_vals=["fused", "torch", "triton"],
         # Label name for the lines
-        line_names=["fused", "torch-jit", "triton"],
+        line_names=["fused", "torch", "triton"],
         # Line styles
         styles=[("green", "--"), ("green", "-"), ("blue", "-")],
         ylabel="GB/s",  # Label name for the y-axis
@@ -57,19 +57,22 @@ def benchmark(seq_len, provider, mode="forward"):
     t = torch.randn([s, b, h, d], device="cuda")
     freqs = torch.randn([s2, 1, 1, d2], device="cuda")
     dx = torch.randn_like(t)
-    t.requires_grad_(True)
 
     quantiles = [0.5, 0.2, 0.8]
     if provider == "fused":
         fwd = lambda: apply_rotary_pos_emb(t, freqs, fused=True)
-    elif provider == "torch-jit":
-        fwd = lambda: rope_torch_jit(t, freqs)
+    elif provider == "torch":
+        fwd = lambda: rope_torch_jit(t, freqs) if mode == "inference" else apply_rotary_pos_emb(t, freqs)
     elif provider == "triton":
         fwd = lambda: rope(t, freqs)
 
-    if mode == "forward":
+    if mode == "inference":
+        ms, min_ms, max_ms = triton.testing.do_bench(fwd, quantiles=quantiles)
+    elif mode == "forward":
+        t.requires_grad_(True)
         ms, min_ms, max_ms = triton.testing.do_bench(fwd, quantiles=quantiles)
     else:
+        t.requires_grad_(True)
         x = fwd()
         bwd = lambda: x.backward(dx, retain_graph=True)
         ms, min_ms, max_ms = triton.testing.do_bench(bwd, quantiles=quantiles)
@@ -78,7 +81,9 @@ def benchmark(seq_len, provider, mode="forward"):
     return gbps(ms), gbps(max_ms), gbps(min_ms)
 
 
-os.makedirs("./results/fwd", exist_ok=True)
-os.makedirs("./results/bwd", exist_ok=True)
-benchmark.run(show_plots=True, print_data=True, save_path="./results/fwd", mode="forward")
-benchmark.run(show_plots=True, print_data=True, save_path="./results/bwd", mode="backward")
+os.makedirs("./results/forward", exist_ok=True)
+os.makedirs("./results/backward", exist_ok=True)
+os.makedirs("./results/inference", exist_ok=True)
+benchmark.run(show_plots=True, print_data=True, save_path="./results/forward", mode="forward")
+benchmark.run(show_plots=True, print_data=True, save_path="./results/backward", mode="backward")
+benchmark.run(show_plots=True, print_data=True, save_path="./results/inference", mode="inference")
