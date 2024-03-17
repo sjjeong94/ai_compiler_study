@@ -1,1 +1,1 @@
-from aicom.rope import rope_fwd
+from aicom.positional_embedding import rope
