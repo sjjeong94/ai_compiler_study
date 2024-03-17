@@ -51,35 +51,34 @@ def rope_torch_jit(
         args={},
     )
 )
-def benchmark(seq_len, provider):
+def benchmark(seq_len, provider, mode="forward"):
     s, b, h, d = seq_len, 16, 8, 256
     s2, d2 = 4096, 256
     t = torch.randn([s, b, h, d], device="cuda")
     freqs = torch.randn([s2, 1, 1, d2], device="cuda")
+    dx = torch.randn_like(t)
+    t.requires_grad_(True)
+
     quantiles = [0.5, 0.2, 0.8]
     if provider == "fused":
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: apply_rotary_pos_emb(t, freqs, fused=True), quantiles=quantiles)
-    if provider == "torch-jit":
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: rope_torch_jit(t, freqs), quantiles=quantiles)
-    if provider == "triton":
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: rope(t, freqs), quantiles=quantiles)
+        fwd = lambda: apply_rotary_pos_emb(t, freqs, fused=True)
+    elif provider == "torch-jit":
+        fwd = lambda: rope_torch_jit(t, freqs)
+    elif provider == "triton":
+        fwd = lambda: rope(t, freqs)
+
+    if mode == "forward":
+        ms, min_ms, max_ms = triton.testing.do_bench(fwd, quantiles=quantiles)
+    else:
+        x = fwd()
+        bwd = lambda: x.backward(dx, retain_graph=True)
+        ms, min_ms, max_ms = triton.testing.do_bench(bwd, quantiles=quantiles)
+
     gbps = lambda ms: 2 * t.nelement() * t.element_size() * 1e-9 / (ms * 1e-3)
     return gbps(ms), gbps(max_ms), gbps(min_ms)
 
 
-torch.manual_seed(0)
-s, b, h, d = 32, 16, 12, 1024
-s2, d2 = 48, 768
-t = torch.randn([s, b, h, d], device="cuda")
-freqs = torch.randn([s2, 1, 1, d2], device="cuda")
-
-triton_output = rope(t, freqs)
-torch_output = apply_rotary_pos_emb(t, freqs)
-if torch.allclose(triton_output, torch_output, atol=1e-3, rtol=0):
-    print("✅ Triton and Torch match")
-else:
-    print("❌ Triton and Torch differ")
-
-
-os.makedirs("./results", exist_ok=True)
-benchmark.run(show_plots=True, print_data=True, save_path="./results")
+os.makedirs("./results/fwd", exist_ok=True)
+os.makedirs("./results/bwd", exist_ok=True)
+benchmark.run(show_plots=True, print_data=True, save_path="./results/fwd", mode="forward")
+benchmark.run(show_plots=True, print_data=True, save_path="./results/bwd", mode="backward")
