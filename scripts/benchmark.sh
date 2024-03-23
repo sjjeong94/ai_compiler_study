@@ -1,4 +1,5 @@
 #!/bin/bash
 
-pip install .
+pip install .[tesing]
 python scripts/benchmark.py
+pytest .

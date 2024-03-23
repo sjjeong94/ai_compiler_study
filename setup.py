@@ -23,6 +23,8 @@ setup(
         "License :: OSI Approved :: MIT License",
     ],
     install_requires=[
+        "numpy",
+        "torch",
         "triton>=2.2.0",
     ],
     extras_require={

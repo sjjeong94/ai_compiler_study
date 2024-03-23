@@ -4,7 +4,7 @@ import triton.language as tl
 
 
 @triton.jit
-def rope_fwd_kernel(
+def rope_fw(
     t_ptr,
     f_ptr,
     o_ptr,
@@ -65,7 +65,7 @@ def rope_fwd_kernel(
 
 
 @triton.jit
-def rope_bwd_kernel(
+def rope_bw(
     dx_ptr,
     f_ptr,
     dt_ptr,
@@ -149,7 +149,7 @@ class _rope(torch.autograd.Function):
         o = torch.empty_like(t)
         bh = b * h
 
-        rope_fwd_kernel[(s, bh)](
+        rope_fw[(s, bh)](
             t,
             freqs,
             o,
@@ -183,7 +183,7 @@ class _rope(torch.autograd.Function):
         dt = torch.empty_like(dx)
         bh = b * h
 
-        rope_bwd_kernel[(s, bh)](
+        rope_bw[(s, bh)](
             dx,
             freqs,
             dt,

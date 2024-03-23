@@ -41,11 +41,11 @@ def rope_torch_jit(
         x_vals=[64 * i for i in range(1, 33)],  # Different possible values for `x_name`
         line_arg="provider",  # Argument name whose value corresponds to a different line in the plot
         # Possible values for `line_arg`
-        line_vals=["fused", "torch", "triton"],
+        line_vals=["torch", "cuda", "triton"],
         # Label name for the lines
-        line_names=["fused", "torch", "triton"],
+        line_names=["torch", "cuda", "triton"],
         # Line styles
-        styles=[("green", "--"), ("green", "-"), ("blue", "-")],
+        styles=[("red", "-"), ("green", "-"), ("blue", "-")],
         ylabel="GB/s",  # Label name for the y-axis
         plot_name="rope-performance",  # Name for the plot, used also as a file name for saving the plot.
         args={},
@@ -59,10 +59,10 @@ def benchmark(seq_len, provider, mode="forward"):
     dx = torch.randn_like(t)
 
     quantiles = [0.5, 0.2, 0.8]
-    if provider == "fused":
-        fwd = lambda: apply_rotary_pos_emb(t, freqs, fused=True)
-    elif provider == "torch":
+    if provider == "torch":
         fwd = lambda: rope_torch_jit(t, freqs) if mode == "inference" else apply_rotary_pos_emb(t, freqs)
+    elif provider == "cuda":
+        fwd = lambda: apply_rotary_pos_emb(t, freqs, fused=True)
     elif provider == "triton":
         fwd = lambda: rope(t, freqs)
 
