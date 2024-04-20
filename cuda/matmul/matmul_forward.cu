@@ -232,6 +232,61 @@ void matmul_forward3(float* out,
     cublasCheck(cublasLtMatrixLayoutDestroy(biasLayout));
 }
 
+// ----------------------------------------------------------------------------
+// newly added kernels
+// out is (B,T,OC). OC is short for "output channels", e.g. OC = 4 * C
+// inp is (B,T,C), weight is (OC, C), bias is (OC)
+
+__global__ void matmul_forward_kernel11(float* out,
+                                       const float* inp, const float* weight, const float* bias,
+                                       int BT, int C, int OC) {
+    const int bt = blockIdx.x * blockDim.x + threadIdx.x;
+    const int oc = blockIdx.y * blockDim.y + threadIdx.y;
+    if (bt < BT && oc < OC) {
+        float val = (bias != NULL) ? bias[oc] : 0.0f;
+        for (int i = 0; i < C; i++) {
+            val += inp[bt * C + i] * weight[oc * C + i];
+        }
+        out[bt * OC + oc] = val;
+    }
+}
+void matmul_forward11(float* out,
+                     const float* inp, const float* weight, const float* bias,
+                     int B, int T, int C, int OC,
+                     const int sqrt_block_size) {
+    
+    dim3 gridDim(ceil_div(B * T, sqrt_block_size), ceil_div(OC, sqrt_block_size));
+    dim3 blockDim(sqrt_block_size, sqrt_block_size);
+    matmul_forward_kernel11<<<gridDim, blockDim>>>(out, inp, weight, bias, B*T, C, OC);
+    cudaCheck(cudaGetLastError());
+}
+
+__global__ void matmul_forward_kernel12(float* out,
+                                       const float* inp, const float* weight, const float* bias,
+                                       int BT, int C, int OC,
+                                       unsigned int block_size) {
+    const int bt = blockIdx.x * block_size + (threadIdx.x / block_size);
+    const int oc = blockIdx.y * block_size + (threadIdx.x % block_size);
+    if (bt < BT && oc < OC) {
+        float val = (bias != NULL) ? bias[oc] : 0.0f;
+        for (int i = 0; i < C; i++) {
+            val += inp[bt * C + i] * weight[oc * C + i];
+        }
+        out[bt * OC + oc] = val;
+    }
+}
+void matmul_forward12(float* out,
+                     const float* inp, const float* weight, const float* bias,
+                     int B, int T, int C, int OC,
+                     const int sqrt_block_size) {
+    dim3 gridDim(ceil_div(B * T, sqrt_block_size), ceil_div(OC, sqrt_block_size));
+    dim3 blockDim(sqrt_block_size * sqrt_block_size);
+    matmul_forward_kernel12<<<gridDim, blockDim>>>(out, inp, weight, bias, B*T, C, OC, sqrt_block_size);
+    cudaCheck(cudaGetLastError());
+}
+
+// ----------------------------------------------------------------------------
+
 // kernel version dispatch
 void matmul_forward(int kernel_num,
                     float* out,
@@ -247,6 +302,12 @@ void matmul_forward(int kernel_num,
             break;
         case 3:
             matmul_forward3(out, inp, weight, bias, B, T, C, OC);
+            break;
+        case 11:
+            matmul_forward11(out, inp, weight, bias, B, T, C, OC, sqrt_block_size);
+            break;
+        case 12:
+            matmul_forward12(out, inp, weight, bias, B, T, C, OC, sqrt_block_size);
             break;
         default:
             printf("Invalid kernel number\n");
