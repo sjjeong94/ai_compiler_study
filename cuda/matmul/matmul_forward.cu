@@ -285,6 +285,52 @@ void matmul_forward12(float* out,
     cudaCheck(cudaGetLastError());
 }
 
+#define BLOCKSIZE 16
+__global__ void matmul_forward_kernel13(float* out,
+                                       const float* inp, const float* weight, const float* bias,
+                                       int BT, int C, int OC) {
+    const int cRow = blockIdx.x;
+    const int cCol = blockIdx.y;
+
+    __shared__ float As[BLOCKSIZE * BLOCKSIZE];
+    __shared__ float Bs[BLOCKSIZE * BLOCKSIZE];
+
+    const int threadRow = threadIdx.x / BLOCKSIZE;
+    const int threadCol = threadIdx.x % BLOCKSIZE;
+
+    inp += cRow * BLOCKSIZE * C;
+    weight += cCol * BLOCKSIZE * C;
+    out += cRow * BLOCKSIZE * OC + cCol * BLOCKSIZE;
+
+    const int oc = cCol * BLOCKSIZE + threadCol;
+    float val = (bias != NULL) ? bias[oc] : 0.0f;
+    for (int bkIdx = 0; bkIdx < C; bkIdx += BLOCKSIZE) {
+        As[threadRow * BLOCKSIZE + threadCol] = inp[threadRow * C + threadCol];
+        Bs[threadRow * BLOCKSIZE + threadCol] = weight[threadRow * C + threadCol];
+        __syncthreads();
+
+        inp += BLOCKSIZE;
+        weight += BLOCKSIZE;
+
+        for (int dotIdx = 0; dotIdx < BLOCKSIZE; ++dotIdx) {
+            val += As[threadRow * BLOCKSIZE + dotIdx] * Bs[threadCol * BLOCKSIZE + dotIdx];
+        }
+        __syncthreads();
+    }
+    out[threadRow * OC + threadCol] = val;
+}
+void matmul_forward13(float* out,
+                     const float* inp, const float* weight, const float* bias,
+                     int B, int T, int C, int OC) {
+    dim3 gridDim(ceil_div(B * T, BLOCKSIZE), ceil_div(OC, BLOCKSIZE));
+    dim3 blockDim(BLOCKSIZE * BLOCKSIZE);
+    cudaFuncSetAttribute(matmul_forward_kernel13,
+                        cudaFuncAttributePreferredSharedMemoryCarveout,
+                        cudaSharedmemCarveoutMaxShared);
+    matmul_forward_kernel13<<<gridDim, blockDim>>>(out, inp, weight, bias, B*T, C, OC);
+    cudaCheck(cudaGetLastError());
+}
+
 // ----------------------------------------------------------------------------
 
 // kernel version dispatch
@@ -308,6 +354,9 @@ void matmul_forward(int kernel_num,
             break;
         case 12:
             matmul_forward12(out, inp, weight, bias, B, T, C, OC, sqrt_block_size);
+            break;
+        case 13:
+            matmul_forward13(out, inp, weight, bias, B, T, C, OC);
             break;
         default:
             printf("Invalid kernel number\n");
