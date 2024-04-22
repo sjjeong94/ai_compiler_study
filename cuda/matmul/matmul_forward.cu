@@ -331,6 +331,65 @@ void matmul_forward13(float* out,
     cudaCheck(cudaGetLastError());
 }
 
+#define BM 64
+#define BN 64
+#define BK 8
+#define TM 8
+__global__ void matmul_forward_kernel14(float* C,
+                                       const float* A, const float* B, const float* bias,
+                                       int M, int K, int N) {
+    const int cRow = blockIdx.y;
+    const int cCol = blockIdx.x;
+
+    const int threadRow = threadIdx.x / BN;
+    const int threadCol = threadIdx.x % BN;
+
+    __shared__ float As[BM * BK];
+    __shared__ float Bs[BK * BN];
+
+    A += cRow * BM * K;
+    B += cCol * BN * K;
+    C += cRow * BM * N + cCol * BN;
+
+    const int innerRowA = threadIdx.x / BK;
+    const int innerColA = threadIdx.x % BK;
+    const int innerRowB = threadIdx.x / BN;
+    const int innerColB = threadIdx.x % BN;
+    
+    float threadResults[TM] = {0.0};
+
+    for (int bkIdx = 0; bkIdx < K; bkIdx += BK) {
+        As[innerRowA * BK + innerColA] = A[innerRowA * K + innerColA];
+        Bs[innerRowB * BN + innerColB] = B[innerColB * K + innerRowB];
+        __syncthreads();
+
+        A += BK;
+        B += BK;
+
+        for (int dotIdx = 0; dotIdx < BK; ++dotIdx) {
+            float tmpB = Bs[dotIdx * BN + threadCol];
+            for (int resIdx = 0; resIdx < TM; ++resIdx) {
+                threadResults[resIdx] += As[(threadRow * TM + resIdx) * BK + dotIdx] * tmpB;
+            }
+        }
+        __syncthreads();
+    }
+
+    const int oc = cCol * BN + threadCol;
+    float val = (bias != NULL) ? bias[oc] : 0.0f;
+    for (int resIdx = 0; resIdx < TM; ++resIdx) {
+        C[(threadRow * TM + resIdx) * N + threadCol] = threadResults[resIdx] + val;
+    }
+}
+void matmul_forward14(float* out,
+                     const float* inp, const float* weight, const float* bias,
+                     int B, int T, int C, int OC) {
+    dim3 gridDim(ceil_div(OC, BN), ceil_div(B * T, BM));
+    dim3 blockDim((BM * BN) / TM);
+    matmul_forward_kernel14<<<gridDim, blockDim>>>(out, inp, weight, bias, B*T, C, OC);
+    cudaCheck(cudaGetLastError());
+}
+
 // ----------------------------------------------------------------------------
 
 // kernel version dispatch
@@ -357,6 +416,9 @@ void matmul_forward(int kernel_num,
             break;
         case 13:
             matmul_forward13(out, inp, weight, bias, B, T, C, OC);
+            break;
+        case 14:
+            matmul_forward14(out, inp, weight, bias, B, T, C, OC);
             break;
         default:
             printf("Invalid kernel number\n");
