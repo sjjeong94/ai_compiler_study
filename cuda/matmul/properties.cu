@@ -31,5 +31,4 @@ int main()
     printf("%32s  [%d, %d, %d]\n", "max grid size", iProp.maxGridSize[0], iProp.maxGridSize[1], iProp.maxGridSize[2]);
     printf("%32s  [%d, %d, %d]\n", "max thread dims", iProp.maxThreadsDim[0], iProp.maxThreadsDim[1], iProp.maxThreadsDim[2]);
     printf("%32s  %d\n", "warp size", iProp.warpSize);
-    printf("%32s  %d\n", "max threads per warp", iProp.maxThreadsPerBlock);
 }
