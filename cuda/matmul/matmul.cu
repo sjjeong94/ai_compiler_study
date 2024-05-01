@@ -21,8 +21,10 @@ void matmul_cpu(float *A, float *B, float *C, int M, int N, int K) {
   }
 }
 
-#define BLOCKSIZE 64
+#define BLOCKSIZE 128
 #define TILESIZE 8
+#define TILENUM (BLOCKSIZE / TILESIZE)
+#define BLOCKDIM (TILENUM * TILENUM)
 
 __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N,
                               int K) {
@@ -30,6 +32,10 @@ __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N,
   const int cCol = blockIdx.y;
   const int threadRow = threadIdx.x / (BLOCKSIZE / TILESIZE);
   const int threadCol = threadIdx.x % (BLOCKSIZE / TILESIZE);
+  const int copySize = BLOCKDIM / TILESIZE;
+  const int copyUnit = BLOCKSIZE / copySize;
+  const int innerRow = threadIdx.x / copySize;
+  const int innerCol = threadIdx.x % copySize;
 
   __shared__ float As[TILESIZE * BLOCKSIZE];
   __shared__ float Bs[TILESIZE * BLOCKSIZE];
@@ -43,13 +49,13 @@ __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N,
   C += cRow * BLOCKSIZE * N + cCol * BLOCKSIZE;
 
   for (int bkIdx = 0; bkIdx < K; bkIdx += TILESIZE) {
-    for (int loadOffset = 0; loadOffset < TILESIZE; ++loadOffset) {
-      As[threadRow * BLOCKSIZE + threadCol * TILESIZE + loadOffset] =
-          A[threadRow * M + threadCol * TILESIZE + loadOffset];
+    for (int loadOffset = 0; loadOffset < copyUnit; ++loadOffset) {
+      As[innerRow * BLOCKSIZE + innerCol * copyUnit + loadOffset] =
+          A[innerRow * M + innerCol * copyUnit + loadOffset];
     }
-    for (int loadOffset = 0; loadOffset < TILESIZE; ++loadOffset) {
-      Bs[threadRow * BLOCKSIZE + threadCol * TILESIZE + loadOffset] =
-          B[threadRow * N + threadCol * TILESIZE + loadOffset];
+    for (int loadOffset = 0; loadOffset < copyUnit; ++loadOffset) {
+      Bs[innerRow * BLOCKSIZE + innerCol * copyUnit + loadOffset] =
+          B[innerRow * N + innerCol * copyUnit + loadOffset];
     }
 
     __syncthreads();
@@ -83,7 +89,7 @@ __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N,
 }
 void matmul_cuda(float *A, float *B, float *C, int M, int N, int K) {
   dim3 gridDim(ceil_div(M, BLOCKSIZE), ceil_div(N, BLOCKSIZE));
-  dim3 blockDim((BLOCKSIZE / TILESIZE) * (BLOCKSIZE / TILESIZE));
+  dim3 blockDim(BLOCKDIM);
   matmul_kernel<<<gridDim, blockDim>>>(A, B, C, M, N, K);
   cudaCheck(cudaGetLastError());
 }
