@@ -21,7 +21,86 @@ void matmul_cpu(float *A, float *B, float *C, int M, int N, int K) {
   }
 }
 
-#define BLOCKSIZE 128
+#define BLOCKSIZE 64
+#define TILESIZE 8
+#define TILENUM (BLOCKSIZE / TILESIZE)
+#define BLOCKDIM (TILENUM * TILENUM)
+
+__global__ void matmul_kernel(float *A, float *B, float *C, int M, int N,
+                              int K) {
+  const int cRow = blockIdx.x;
+  const int cCol = blockIdx.y;
+  const int threadRow = threadIdx.x / (BLOCKSIZE / TILESIZE);
+  const int threadCol = threadIdx.x % (BLOCKSIZE / TILESIZE);
+  const int copySize = BLOCKDIM / TILESIZE;
+  const int copyUnit = BLOCKSIZE / copySize;
+  const int innerRow = threadIdx.x / copySize;
+  const int innerCol = threadIdx.x % copySize;
+
+  __shared__ float As[TILESIZE * BLOCKSIZE];
+  __shared__ float Bs[TILESIZE * BLOCKSIZE];
+
+  float threadResults[TILESIZE * TILESIZE] = {0.0f};
+  float regM[TILESIZE] = {0.0f};
+  float regN[TILESIZE] = {0.0f};
+
+  A += cRow * BLOCKSIZE;
+  B += cCol * BLOCKSIZE;
+  C += cRow * BLOCKSIZE * N + cCol * BLOCKSIZE;
+
+  for (int bkIdx = 0; bkIdx < K; bkIdx += TILESIZE) {
+    for (int loadOffset = 0; loadOffset < copyUnit; loadOffset += 4) {
+      reinterpret_cast<float4 *>(
+          &As[innerRow * BLOCKSIZE + innerCol * copyUnit + loadOffset])[0] =
+          reinterpret_cast<float4 *>(
+              &A[innerRow * M + innerCol * copyUnit + loadOffset])[0];
+    }
+    for (int loadOffset = 0; loadOffset < copyUnit; loadOffset += 4) {
+      reinterpret_cast<float4 *>(
+          &Bs[innerRow * BLOCKSIZE + innerCol * copyUnit + loadOffset])[0] =
+          reinterpret_cast<float4 *>(
+              &B[innerRow * N + innerCol * copyUnit + loadOffset])[0];
+    }
+    __syncthreads();
+
+    A += TILESIZE * M;
+    B += TILESIZE * N;
+
+    for (int dotIdx = 0; dotIdx < TILESIZE; ++dotIdx) {
+      for (int i = 0; i < TILESIZE; ++i) {
+        regM[i] = As[dotIdx * BLOCKSIZE + threadRow * TILESIZE + i];
+      }
+      for (int i = 0; i < TILESIZE; ++i) {
+        regN[i] = Bs[dotIdx * BLOCKSIZE + threadCol * TILESIZE + i];
+      }
+      for (int resIdxM = 0; resIdxM < TILESIZE; ++resIdxM) {
+        for (int resIdxN = 0; resIdxN < TILESIZE; ++resIdxN) {
+          threadResults[resIdxM * TILESIZE + resIdxN] +=
+              regM[resIdxM] * regN[resIdxN];
+        }
+      }
+    }
+    __syncthreads();
+  }
+
+  for (int resIdxM = 0; resIdxM < TILESIZE; ++resIdxM) {
+    for (int resIdxN = 0; resIdxN < TILESIZE; resIdxN += 4) {
+      reinterpret_cast<float4 *>(&C[(threadRow * TILESIZE + resIdxM) * N +
+                                    threadCol * TILESIZE + resIdxN])[0] =
+          reinterpret_cast<float4 *>(
+              &threadResults[resIdxM * TILESIZE + resIdxN])[0];
+    }
+  }
+}
+void matmul_cuda(float *A, float *B, float *C, int M, int N, int K) {
+  dim3 gridDim(ceil_div(M, BLOCKSIZE), ceil_div(N, BLOCKSIZE));
+  dim3 blockDim(BLOCKDIM);
+  matmul_kernel<<<gridDim, blockDim>>>(A, B, C, M, N, K);
+  cudaCheck(cudaGetLastError());
+}
+
+/*
+#define BLOCKSIZE 64
 #define TILESIZE 8
 #define TILENUM (BLOCKSIZE / TILESIZE)
 #define BLOCKDIM (TILENUM * TILENUM)
@@ -82,8 +161,8 @@ __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N,
 
   for (int resIdxM = 0; resIdxM < TILESIZE; ++resIdxM) {
     for (int resIdxN = 0; resIdxN < TILESIZE; ++resIdxN) {
-      C[(threadRow * TILESIZE + resIdxM) * N + threadCol * TILESIZE + resIdxN] =
-          threadResults[resIdxM * TILESIZE + resIdxN];
+      C[(threadRow * TILESIZE + resIdxM) * N + threadCol * TILESIZE + resIdxN]
+= threadResults[resIdxM * TILESIZE + resIdxN];
     }
   }
 }
@@ -94,7 +173,7 @@ void matmul_cuda(float *A, float *B, float *C, int M, int N, int K) {
   cudaCheck(cudaGetLastError());
 }
 
-/*
+
 #define BLOCKSIZE 16
 __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N,
                               int K) {
