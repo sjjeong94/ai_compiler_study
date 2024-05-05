@@ -1,4 +1,4 @@
-// nvcc -O3 ./matmul.cu -o matmul && ./matmul
+// nvcc -O3 ./matmul2.cu -o matmul && ./matmul
 
 #include <cuda_runtime.h>
 #include <stdio.h>
@@ -11,7 +11,7 @@ void matmul_cpu(float *A, float *B, float *C, int M, int N, int K) {
     for (int n = 0; n < N; ++n) {
       float val = 0.0f;
       for (int k = 0; k < K; ++k) {
-        val += A[k * M + m] * B[k * N + n];
+        val += A[m * K + k] * B[k * N + n];
       }
       C[m * N + n] = val;
     }
@@ -35,7 +35,7 @@ __global__ void matmul_kernel_1(float *A, float *B, float *C, int M, int N,
   if (m < M && n < N) {
     float val = 0.0f;
     for (int k = 0; k < K; ++k) {
-      val += A[k * M + m] * B[k * N + n];
+      val += A[m * K + k] * B[k * N + n];
     }
     C[m * N + n] = val;
   }
@@ -57,21 +57,21 @@ __global__ void matmul_kernel_2(float *A, float *B, float *C, int M, int N,
   __shared__ float As[BLOCKSIZE * BLOCKSIZE];
   __shared__ float Bs[BLOCKSIZE * BLOCKSIZE];
 
-  A += cRow * BLOCKSIZE;
+  A += cRow * BLOCKSIZE * K;
   B += cCol * BLOCKSIZE;
   C += cRow * BLOCKSIZE * N + cCol * BLOCKSIZE;
 
   float val = 0.0f;
   for (int bkIdx = 0; bkIdx < K; bkIdx += BLOCKSIZE) {
-    As[threadRow * BLOCKSIZE + threadCol] = A[threadRow * M + threadCol];
+    As[threadRow * BLOCKSIZE + threadCol] = A[threadRow * K + threadCol];
     Bs[threadRow * BLOCKSIZE + threadCol] = B[threadRow * N + threadCol];
     __syncthreads();
 
-    A += BLOCKSIZE * M;
+    A += BLOCKSIZE;
     B += BLOCKSIZE * N;
 
     for (int dotIdx = 0; dotIdx < BLOCKSIZE; ++dotIdx) {
-      val += As[dotIdx * BLOCKSIZE + threadRow] *
+      val += As[threadRow * BLOCKSIZE + dotIdx] *
              Bs[dotIdx * BLOCKSIZE + threadCol];
     }
     __syncthreads();
@@ -93,8 +93,7 @@ __global__ void matmul_kernel_3(float *A, float *B, float *C, int M, int N,
   const int threadCol = threadIdx.x % (BLOCKSIZE / TILESIZE);
   const int copySize = BLOCKDIM / TILESIZE;
   const int copyUnit = BLOCKSIZE / copySize;
-  const int innerRow = threadIdx.x / copySize;
-  const int innerCol = threadIdx.x % copySize;
+  const int innerCol = threadIdx.x;
 
   __shared__ float As[TILESIZE * BLOCKSIZE];
   __shared__ float Bs[TILESIZE * BLOCKSIZE];
@@ -103,23 +102,20 @@ __global__ void matmul_kernel_3(float *A, float *B, float *C, int M, int N,
   float regM[TILESIZE] = {0.0f};
   float regN[TILESIZE] = {0.0f};
 
-  A += cRow * BLOCKSIZE;
+  A += cRow * BLOCKSIZE * K;
   B += cCol * BLOCKSIZE;
   C += cRow * BLOCKSIZE * N + cCol * BLOCKSIZE;
 
   for (int bkIdx = 0; bkIdx < K; bkIdx += TILESIZE) {
     for (int loadOffset = 0; loadOffset < copyUnit; ++loadOffset) {
-      As[innerRow * BLOCKSIZE + innerCol * copyUnit + loadOffset] =
-          A[innerRow * M + innerCol * copyUnit + loadOffset];
+      As[loadOffset * BLOCKSIZE + innerCol] = A[innerCol * K + loadOffset];
     }
     for (int loadOffset = 0; loadOffset < copyUnit; ++loadOffset) {
-      Bs[innerRow * BLOCKSIZE + innerCol * copyUnit + loadOffset] =
-          B[innerRow * N + innerCol * copyUnit + loadOffset];
+      Bs[loadOffset * BLOCKSIZE + innerCol] = B[loadOffset * N + innerCol];
     }
-
     __syncthreads();
 
-    A += TILESIZE * M;
+    A += TILESIZE;
     B += TILESIZE * N;
 
     for (int dotIdx = 0; dotIdx < TILESIZE; ++dotIdx) {
@@ -161,8 +157,7 @@ __global__ void matmul_kernel_4(float *A, float *B, float *C, int M, int N,
   const int threadCol = threadIdx.x % (BLOCKSIZE / TILESIZE);
   const int copySize = BLOCKDIM / TILESIZE;
   const int copyUnit = BLOCKSIZE / copySize;
-  const int innerRow = threadIdx.x / copySize;
-  const int innerCol = threadIdx.x % copySize;
+  const int innerCol = threadIdx.x;
 
   __shared__ float As[TILESIZE * BLOCKSIZE];
   __shared__ float Bs[TILESIZE * BLOCKSIZE];
@@ -171,26 +166,24 @@ __global__ void matmul_kernel_4(float *A, float *B, float *C, int M, int N,
   float regM[TILESIZE] = {0.0f};
   float regN[TILESIZE] = {0.0f};
 
-  A += cRow * BLOCKSIZE;
+  A += cRow * BLOCKSIZE * K;
   B += cCol * BLOCKSIZE;
   C += cRow * BLOCKSIZE * N + cCol * BLOCKSIZE;
 
   for (int bkIdx = 0; bkIdx < K; bkIdx += TILESIZE) {
     for (int loadOffset = 0; loadOffset < copyUnit; loadOffset += 4) {
-      reinterpret_cast<float4 *>(
-          &As[innerRow * BLOCKSIZE + innerCol * copyUnit + loadOffset])[0] =
-          reinterpret_cast<float4 *>(
-              &A[innerRow * M + innerCol * copyUnit + loadOffset])[0];
+      float4 tmp = reinterpret_cast<float4 *>(&A[innerCol * K + loadOffset])[0];
+      As[(loadOffset + 0) * BLOCKSIZE + innerCol] = tmp.x;
+      As[(loadOffset + 1) * BLOCKSIZE + innerCol] = tmp.y;
+      As[(loadOffset + 2) * BLOCKSIZE + innerCol] = tmp.z;
+      As[(loadOffset + 3) * BLOCKSIZE + innerCol] = tmp.w;
     }
-    for (int loadOffset = 0; loadOffset < copyUnit; loadOffset += 4) {
-      reinterpret_cast<float4 *>(
-          &Bs[innerRow * BLOCKSIZE + innerCol * copyUnit + loadOffset])[0] =
-          reinterpret_cast<float4 *>(
-              &B[innerRow * N + innerCol * copyUnit + loadOffset])[0];
+    for (int loadOffset = 0; loadOffset < copyUnit; ++loadOffset) {
+      Bs[loadOffset * BLOCKSIZE + innerCol] = B[loadOffset * N + innerCol];
     }
     __syncthreads();
 
-    A += TILESIZE * M;
+    A += TILESIZE;
     B += TILESIZE * N;
 
     for (int dotIdx = 0; dotIdx < TILESIZE; ++dotIdx) {
@@ -211,11 +204,9 @@ __global__ void matmul_kernel_4(float *A, float *B, float *C, int M, int N,
   }
 
   for (int resIdxM = 0; resIdxM < TILESIZE; ++resIdxM) {
-    for (int resIdxN = 0; resIdxN < TILESIZE; resIdxN += 4) {
-      reinterpret_cast<float4 *>(&C[(threadRow * TILESIZE + resIdxM) * N +
-                                    threadCol * TILESIZE + resIdxN])[0] =
-          reinterpret_cast<float4 *>(
-              &threadResults[resIdxM * TILESIZE + resIdxN])[0];
+    for (int resIdxN = 0; resIdxN < TILESIZE; ++resIdxN) {
+      C[(threadRow * TILESIZE + resIdxM) * N + threadCol * TILESIZE + resIdxN] =
+          threadResults[resIdxM * TILESIZE + resIdxN];
     }
   }
 }
@@ -239,7 +230,7 @@ int main(int argc, char **argv) {
   cudaGetDeviceProperties(&deviceProp, deviceIdx);
   printf("Device %d: %s\n", deviceIdx, deviceProp.name);
 
-  float *A = make_random_float(K * M);
+  float *A = make_random_float(M * K);
   float *B = make_random_float(K * N);
   float *C = (float *)malloc(M * N * sizeof(float));
 
@@ -247,10 +238,10 @@ int main(int argc, char **argv) {
   float *B_d;
   float *C_d;
 
-  cudaCheck(cudaMalloc(&A_d, K * M * sizeof(float)));
+  cudaCheck(cudaMalloc(&A_d, M * K * sizeof(float)));
   cudaCheck(cudaMalloc(&B_d, K * N * sizeof(float)));
   cudaCheck(cudaMalloc(&C_d, M * N * sizeof(float)));
-  cudaCheck(cudaMemcpy(A_d, A, K * M * sizeof(float), cudaMemcpyHostToDevice));
+  cudaCheck(cudaMemcpy(A_d, A, M * K * sizeof(float), cudaMemcpyHostToDevice));
   cudaCheck(cudaMemcpy(B_d, B, K * N * sizeof(float), cudaMemcpyHostToDevice));
 
   matmul_cpu(A, B, C, M, N, K);
