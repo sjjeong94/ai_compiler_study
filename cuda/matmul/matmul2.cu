@@ -1,4 +1,5 @@
-// nvcc -O3 ./matmul2.cu -o matmul && ./matmul
+// nvcc -O3 --use_fast_math -Xcompiler -fopenmp ./matmul.cu -o matmul
+// OMP_NUM_THREADS=32 ./matmul
 
 #include <cuda_runtime.h>
 #include <stdio.h>
@@ -7,6 +8,7 @@
 #include "common.h"
 
 void matmul_cpu(float *A, float *B, float *C, int M, int N, int K) {
+#pragma omp parallel for collapse(2)
   for (int m = 0; m < M; ++m) {
     for (int n = 0; n < N; ++n) {
       float val = 0.0f;
@@ -220,9 +222,10 @@ void matmul_cuda_4(float *A, float *B, float *C, int M, int N, int K) {
 int main(int argc, char **argv) {
   srand(0);
 
-  int M = 512;
-  int N = 1024;
+  int M = 1024 * 8;
+  int N = 768 * 4;
   int K = 768;
+  printf("Matrix shape -> M = %d, N = %d, K = %d\n", M, N, K);
 
   int deviceIdx = 0;
   cudaCheck(cudaSetDevice(deviceIdx));
@@ -253,7 +256,7 @@ int main(int argc, char **argv) {
       benchmark_kernel(repeat_times, matmul_cuda_4, A_d, B_d, C_d, M, N, K);
 
   float tflops = (float)M * N * K * 2 / elapsed_time * 1e3f / 1e12f;
-  float max_tflops = 20.31f;
+  float max_tflops = 31.24f;
   printf("time %.4f ms | tflops %.2f (%.2f %%)\n", elapsed_time, tflops,
          (tflops / max_tflops * 100.0f));
 
