@@ -61,8 +61,8 @@ int main(int argc, char **argv) {
   cudaCheck(cudaMemcpy(B_d, B, K * N * sizeof(float), cudaMemcpyHostToDevice));
 
   cublasCheck(cublasCreate(&cublas_handle));
-  // cublasMath_t cublas_math_mode = CUBLAS_DEFAULT_MATH;
-  cublasMath_t cublas_math_mode = CUBLAS_TF32_TENSOR_OP_MATH;
+  cublasMath_t cublas_math_mode = CUBLAS_DEFAULT_MATH;
+  // cublasMath_t cublas_math_mode = CUBLAS_TF32_TENSOR_OP_MATH;
   cublasCheck(cublasSetMathMode(cublas_handle, cublas_math_mode));
 
   matmul_cpu(A, B, C, M, N, K);
